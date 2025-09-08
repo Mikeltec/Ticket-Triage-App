@@ -1,0 +1,398 @@
+<template>
+  <div class="dashboard-view">
+    <!-- Page Header -->
+    <div class="page-header">
+      <div class="page-header__content">
+        <h2 class="page-header__title">Dashboard</h2>
+        <p class="page-header__subtitle">
+          Overview of ticket analytics and statistics
+        </p>
+      </div>
+      <div class="page-header__actions">
+        <button @click="refreshStats" :disabled="loading" class="btn btn--ghost">
+          {{ loading ? 'Refreshing...' : 'Refresh' }}
+        </button>
+      </div>
+    </div>
+
+    <!-- Loading State -->
+    <div v-if="loading" class="loading-state">
+      <div class="loading-spinner"></div>
+      <p>Loading dashboard data...</p>
+    </div>
+
+    <!-- Dashboard Content -->
+    <div v-else class="dashboard-content">
+      <!-- Overview Cards -->
+      <div class="stats-grid">
+        <!-- Total Tickets -->
+        <div class="stat-card stat-card--primary">
+          <div class="stat-card__icon">📋</div>
+          <div class="stat-card__content">
+            <div class="stat-card__value">{{ stats.total_tickets || 0 }}</div>
+            <div class="stat-card__label">Total Tickets</div>
+          </div>
+        </div>
+
+        <!-- Classified Tickets -->
+        <div class="stat-card stat-card--success">
+          <div class="stat-card__icon">🤖</div>
+          <div class="stat-card__content">
+            <div class="stat-card__value">{{ stats.classification_stats?.classified_count || 0 }}</div>
+            <div class="stat-card__label">AI Classified</div>
+            <div class="stat-card__subtitle">
+              {{ classificationPercentage }}% of total
+            </div>
+          </div>
+        </div>
+
+        <!-- Tickets with Notes -->
+        <div class="stat-card stat-card--info">
+          <div class="stat-card__icon">📝</div>
+          <div class="stat-card__content">
+            <div class="stat-card__value">{{ stats.tickets_with_notes || 0 }}</div>
+            <div class="stat-card__label">With Notes</div>
+          </div>
+        </div>
+
+        <!-- Average Confidence -->
+        <div class="stat-card stat-card--warning">
+          <div class="stat-card__icon">🎯</div>
+          <div class="stat-card__content">
+            <div class="stat-card__value">{{ averageConfidenceDisplay }}</div>
+            <div class="stat-card__label">Avg. Confidence</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Charts Section -->
+      <div class="charts-section">
+        <!-- Status Distribution -->
+        <div class="chart-card">
+          <div class="chart-card__header">
+            <h3 class="chart-card__title">Tickets by Status</h3>
+          </div>
+          <div class="chart-card__content">
+            <canvas ref="statusChart" width="400" height="200"></canvas>
+          </div>
+        </div>
+
+        <!-- Category Distribution -->
+        <div class="chart-card">
+          <div class="chart-card__header">
+            <h3 class="chart-card__title">Tickets by Category</h3>
+            <p class="chart-card__subtitle">AI Classified tickets only</p>
+          </div>
+          <div class="chart-card__content">
+            <div v-if="!hasCategoryData" class="chart-empty-state">
+              <p>No classified tickets to display</p>
+            </div>
+            <canvas v-else ref="categoryChart" width="400" height="200"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Recent Activity -->
+      <div class="activity-section">
+        <div class="activity-card">
+          <div class="activity-card__header">
+            <h3 class="activity-card__title">Recent Activity</h3>
+            <p class="activity-card__subtitle">Last 7 days</p>
+          </div>
+          <div class="activity-card__content">
+            <div v-if="!hasRecentActivity" class="activity-empty-state">
+              <p>No recent activity to display</p>
+            </div>
+            <canvas v-else ref="activityChart" width="400" height="150"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Statistics Table -->
+      <div class="table-section">
+        <div class="table-card">
+          <div class="table-card__header">
+            <h3 class="table-card__title">Detailed Statistics</h3>
+          </div>
+          <div class="table-card__content">
+            <table class="stats-table">
+              <tbody>
+                <tr>
+                  <td class="stats-table__label">Total Tickets</td>
+                  <td class="stats-table__value">{{ stats.total_tickets || 0 }}</td>
+                </tr>
+                <tr v-for="(count, status) in stats.tickets_by_status" :key="status">
+                  <td class="stats-table__label">{{ getStatusLabel(status) }}</td>
+                  <td class="stats-table__value">{{ count }}</td>
+                </tr>
+                <tr>
+                  <td class="stats-table__label">AI Classified</td>
+                  <td class="stats-table__value">{{ stats.classification_stats?.classified_count || 0 }}</td>
+                </tr>
+                <tr>
+                  <td class="stats-table__label">Unclassified</td>
+                  <td class="stats-table__value">{{ stats.classification_stats?.unclassified_count || 0 }}</td>
+                </tr>
+                <tr>
+                  <td class="stats-table__label">With Notes</td>
+                  <td class="stats-table__value">{{ stats.tickets_with_notes || 0 }}</td>
+                </tr>
+                <tr>
+                  <td class="stats-table__label">Average Confidence</td>
+                  <td class="stats-table__value">{{ averageConfidenceDisplay }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Last Updated -->
+      <div class="dashboard-footer">
+        <p class="dashboard-footer__text">
+          Last updated: {{ formatDateTime(stats.generated_at) }}
+        </p>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script>
+import { Chart, registerables } from 'chart.js'
+import { api } from '../utils/api'
+import { formatDateTime, getCategoryDisplayName } from '../utils/helpers'
+
+Chart.register(...registerables)
+
+export default {
+  name: 'DashboardView',
+  data() {
+    return {
+      stats: {},
+      loading: false,
+      statusChart: null,
+      categoryChart: null,
+      activityChart: null
+    }
+  },
+  computed: {
+    classificationPercentage() {
+      if (!this.stats.total_tickets || !this.stats.classification_stats?.classified_count) {
+        return 0
+      }
+      return Math.round((this.stats.classification_stats.classified_count / this.stats.total_tickets) * 100)
+    },
+    averageConfidenceDisplay() {
+      if (!this.stats.classification_stats?.average_confidence) {
+        return 'N/A'
+      }
+      return `${Math.round(this.stats.classification_stats.average_confidence * 100)}%`
+    },
+    hasCategoryData() {
+      return this.stats.tickets_by_category && Object.keys(this.stats.tickets_by_category).length > 0
+    },
+    hasRecentActivity() {
+      return this.stats.recent_activity && this.stats.recent_activity.length > 0
+    }
+  },
+  mounted() {
+    this.loadStats()
+  },
+  beforeUnmount() {
+    // Destroy charts to prevent memory leaks
+    if (this.statusChart) this.statusChart.destroy()
+    if (this.categoryChart) this.categoryChart.destroy()
+    if (this.activityChart) this.activityChart.destroy()
+  },
+  methods: {
+    formatDateTime,
+
+    // Local notification method
+    showNotification(message, type = 'info') {
+      console.log(`🔔 ${type.toUpperCase()}: ${message}`)
+      
+      if (type === 'error') {
+        alert(`❌ Error: ${message}`)
+      } else if (type === 'success') {
+        console.log(`✅ ${message}`)
+      } else if (type === 'warning') {
+        console.log(`⚠️ ${message}`)
+      }
+    },
+
+    async loadStats() {
+      this.loading = true
+      
+      try {
+        this.stats = await api.getStats()
+        
+        // Wait for DOM update, then create charts
+        this.$nextTick(() => {
+          this.createStatusChart()
+          this.createCategoryChart()
+          this.createActivityChart()
+        })
+      } catch (error) {
+        console.error('Failed to load stats:', error)
+        this.showNotification('Failed to load dashboard data', 'error')
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async refreshStats() {
+      await this.loadStats()
+      this.showNotification('Dashboard refreshed', 'success')
+    },
+
+    createStatusChart() {
+      if (!this.$refs.statusChart || !this.stats.tickets_by_status) return
+      
+      const ctx = this.$refs.statusChart.getContext('2d')
+      
+      const data = this.stats.tickets_by_status
+      const labels = Object.keys(data).map(status => this.getStatusLabel(status))
+      const values = Object.values(data)
+      
+      const colors = [
+        '#3B82F6', // blue
+        '#F59E0B', // yellow
+        '#10B981', // green
+        '#6B7280'  // gray
+      ]
+      
+      if (this.statusChart) this.statusChart.destroy()
+      
+      this.statusChart = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+          labels: labels,
+          datasets: [{
+            data: values,
+            backgroundColor: colors,
+            borderWidth: 2,
+            borderColor: '#ffffff'
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              position: 'bottom',
+              labels: {
+                padding: 20,
+                usePointStyle: true
+              }
+            }
+          }
+        }
+      })
+    },
+
+    createCategoryChart() {
+      if (!this.$refs.categoryChart || !this.hasCategoryData) return
+      
+      const ctx = this.$refs.categoryChart.getContext('2d')
+      
+      const data = this.stats.tickets_by_category
+      const labels = Object.keys(data).map(category => getCategoryDisplayName(category))
+      const values = Object.values(data)
+      
+      if (this.categoryChart) this.categoryChart.destroy()
+      
+      this.categoryChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Tickets',
+            data: values,
+            backgroundColor: '#8B5CF6',
+            borderColor: '#7C3AED',
+            borderWidth: 1
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            y: {
+              beginAtZero: true,
+              ticks: {
+                stepSize: 1
+              }
+            },
+            x: {
+              ticks: {
+                maxRotation: 45,
+                minRotation: 45
+              }
+            }
+          },
+          plugins: {
+            legend: {
+              display: false
+            }
+          }
+        }
+      })
+    },
+
+    createActivityChart() {
+      if (!this.$refs.activityChart || !this.hasRecentActivity) return
+      
+      const ctx = this.$refs.activityChart.getContext('2d')
+      
+      const data = this.stats.recent_activity
+      const labels = data.map(item => new Date(item.date).toLocaleDateString([], { month: 'short', day: 'numeric' }))
+      const values = data.map(item => item.count)
+      
+      if (this.activityChart) this.activityChart.destroy()
+      
+      this.activityChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'New Tickets',
+            data: values,
+            borderColor: '#06B6D4',
+            backgroundColor: 'rgba(6, 182, 212, 0.1)',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.4
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            y: {
+              beginAtZero: true,
+              ticks: {
+                stepSize: 1
+              }
+            }
+          },
+          plugins: {
+            legend: {
+              display: false
+            }
+          }
+        }
+      })
+    },
+
+    getStatusLabel(status) {
+      const statusLabels = {
+        'open': 'Open',
+        'in_progress': 'In Progress',
+        'resolved': 'Resolved',
+        'closed': 'Closed'
+      }
+      return statusLabels[status] || status
+    }
+  }
+}
+</script>

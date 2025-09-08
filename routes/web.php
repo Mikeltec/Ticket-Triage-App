@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\Route;
 */
 
 // SPA fallback route - serve the Vue.js application for all routes
+// IMPORTANT: This should NOT match /api routes
 Route::get('/{any}', function () {
     return view('app');
-})->where('any', '.*')->name('spa.index');
+})->where('any', '^(?!api).*')->name('spa.index');
